@@ -1,0 +1,22 @@
+# 敏感配置文件
+*.env
+credentials.toml
+
+# 状态文件（自动生成的运行时状态）
+state/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
