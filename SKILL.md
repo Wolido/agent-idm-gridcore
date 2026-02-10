@@ -7,6 +7,10 @@ description: Agent 的算力调用工具。透明利用 IDM-GridCore 分布式�
 
 让 AI Agent 能够调用分布式计算集群，加速处理大批量小任务。
 
+> **源码与接口文档**: https://github.com/Wolido/idm-gridcore
+> 
+> 本项目详细接口定义、API 规范、数据模型等，请参考上述仓库源码。
+
 ---
 
 ## 什么时候使用
@@ -273,6 +277,10 @@ redis-cli -u $CLUSTER_PRODUCTION_REDIS_URL ping
 
 ## 任务提交流程
 
+> **接口详情参考**: https://github.com/Wolido/idm-gridcore
+> 
+> 以下示例展示了主要的 API 调用方式，完整接口定义请查阅项目源码。
+
 ### 完整示例：批量计算平方根
 
 ```bash
@@ -419,6 +427,10 @@ rm -rf "$WORKDIR"
 ---
 
 ## 常用操作命令
+
+> **API 完整列表**: https://github.com/Wolido/idm-gridcore
+> 
+> 以下是常用命令示例，所有接口的详细说明请参考项目源码。
 
 ### 查看集群状态
 
@@ -661,6 +673,7 @@ skill 自动管理的配置文件：
 
 ## 相关链接
 
-- IDM-GridCore 项目：https://github.com/Wolido/idm-gridcore
+- **IDM-GridCore 项目（接口源码）**: https://github.com/Wolido/idm-gridcore
+  - 所有 API 接口定义、数据模型、协议规范请查阅此仓库
 - 架构文档：https://github.com/Wolido/idm-gridcore/blob/main/ARCHITECTURE.md
 - 故障排查：https://github.com/Wolido/idm-gridcore/blob/main/TROUBLESHOOTING.md
