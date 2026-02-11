@@ -138,9 +138,6 @@ EOF
 sudo tee /etc/idm-gridcore/gridnode.toml > /dev/null << EOF
 server_url = "http://localhost:8080"
 token = "$(grep token /etc/idm-gridcore/computehub.toml | cut -d'"' -f2)"
-heartbeat_interval = 30
-stop_timeout = 30
-container_memory = 1024
 EOF
 ```
 
