@@ -971,7 +971,37 @@ curl http://localhost:8080/health
 3. GridNode 日志查看错误
 4. 手动测试容器：`docker run --rm idm-task:xxx`
 
-### 问题 4：队列有数据但无输出
+### 问题 4：节点状态为 Error 且新任务不启动
+
+**症状**：
+- 查看节点状态显示 `"runtime_status": "Error"`
+- 注册新任务后容器不启动
+- GridNode 日志显示之前的错误状态未清除
+
+**原因**：
+GridNode 只有在检测到**新任务**（不同名称）时才会清除错误状态。如果重新注册**同名任务**，错误状态会继续保留。
+
+**解决方案**：
+
+**推荐**：使用不同名称重新注册任务
+```bash
+# 错误：使用相同名称，错误状态不重置
+curl -X POST "${COMPUTEHUB_URL}/api/tasks" \
+  -d '{"name": "my-task", ...}'
+
+# 正确：使用新名称（如加版本号/时间戳）
+curl -X POST "${COMPUTEHUB_URL}/api/tasks" \
+  -d '{"name": "my-task-v2", ...}'
+```
+
+**备选**：重启 GridNode
+```bash
+kill $(cat /tmp/gridnode.pid)
+# 重新启动 GridNode
+nohup ./gridnode -c ~/.config/idm-gridcore/gridnode.toml &
+```
+
+### 问题 5：队列有数据但无输出
 
 **排查**：
 ```bash
