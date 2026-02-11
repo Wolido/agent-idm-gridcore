@@ -41,11 +41,15 @@ description: Agent 的算力调用工具。透明利用 IDM-GridCore 分布式�
 
 **首先询问用户**：计算集群准备好了吗？
 
-| 场景 | 处理方式 |
-|------|----------|
-| 没有集群，需要临时启动 | 使用"从零启动"模式 |
-| 已有公司/团队共享集群 | 使用"连接已有集群"模式 |
-| 不确定 | 默认推荐"从零启动"（最简单） |
+```yaml
+modes:
+  - scenario: 没有集群，需要临时启动
+    action: 使用"从零启动"模式
+  - scenario: 已有公司/团队共享集群
+    action: 使用"连接已有集群"模式
+  - scenario: 不确定
+    action: 默认推荐"从零启动"（最简单）
+```
 
 ### 2. 从零启动检查
 
@@ -83,28 +87,90 @@ lsof -i :6379
 
 #### 步骤 1：下载二进制
 
+**重要**：不要假设 release 文件的命名格式，务必先查阅 release 页面了解实际发布内容。不同版本可能有不同的打包方式（单独二进制、tar.gz、zip 等）。
+
+**推荐步骤**：
+
+```bash
+# 1. 先查看 release 页面有哪些文件
+curl -s https://api.github.com/repos/Wolido/idm-gridcore/releases/latest | grep "browser_download_url"
+
+# 2. 根据实际文件结构决定下载方式
+# 示例：如果是压缩包，下载后解压；如果是单独二进制，直接下载
+```
+
+**示例脚本**（根据实际 release 结构调整）：
+
 ```bash
 # 创建目录
 mkdir -p ~/.local/share/idm-gridcore/bin
 cd ~/.local/share/idm-gridcore/bin
 
-# 下载对应架构的预编译二进制（从 GitHub Releases）
-# 检测当前架构
+# 检测当前架构和平台
 ARCH=$(uname -m)
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+
+if [ "$OS" = "darwin" ]; then
+    PLATFORM="macos"
+elif [ "$OS" = "linux" ]; then
+    PLATFORM="linux"
+else
+    echo "不支持的操作系统: $OS"
+    exit 1
+fi
+
 if [ "$ARCH" = "x86_64" ]; then
-    PLATFORM="linux-x64"
+    ARCH_SUFFIX="x64"
 elif [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
-    PLATFORM="linux-arm64"
+    ARCH_SUFFIX="arm64"
 else
     echo "不支持的架构: $ARCH，需要本地编译"
     exit 1
 fi
 
-# 下载最新 release
-curl -L "https://github.com/Wolido/idm-gridcore/releases/latest/download/computehub-${PLATFORM}" -o computehub
-curl -L "https://github.com/Wolido/idm-gridcore/releases/latest/download/gridnode-${PLATFORM}" -o gridnode
+# 获取下载 URL（根据实际文件名模式调整）
+echo "查询最新 release..."
+DOWNLOAD_URL=$(curl -s https://api.github.com/repos/Wolido/idm-gridcore/releases/latest | \
+    grep "browser_download_url" | \
+    grep "${PLATFORM}-${ARCH_SUFFIX}" | \
+    head -1 | cut -d'"' -f4)
 
-chmod +x computehub gridnode
+if [ -z "$DOWNLOAD_URL" ]; then
+    echo "错误：无法获取下载 URL，可能需要本地编译"
+    exit 1
+fi
+
+echo "下载: $DOWNLOAD_URL"
+
+# 根据文件类型处理
+if echo "$DOWNLOAD_URL" | grep -q "\.tar\.gz"; then
+    # tar.gz 压缩包
+    curl -L -o package.tar.gz "$DOWNLOAD_URL"
+    tar -xzf package.tar.gz
+    # 移动二进制文件（根据实际目录结构调整）
+    find . -name "computehub" -o -name "gridnode" | while read f; do mv "$f" .; done
+    rm -rf package.tar.gz */
+elif echo "$DOWNLOAD_URL" | grep -q "\.zip"; then
+    # zip 压缩包
+    curl -L -o package.zip "$DOWNLOAD_URL"
+    unzip -q package.zip
+    find . -name "computehub" -o -name "gridnode" | while read f; do mv "$f" .; done
+    rm -rf package.zip */
+else
+    # 单独二进制文件
+    curl -L -o computehub "$DOWNLOAD_URL"
+fi
+
+chmod +x computehub gridnode 2>/dev/null || true
+
+# 验证
+if [ -f computehub ] && [ -f gridnode ]; then
+    echo "下载成功"
+    ls -la computehub gridnode
+else
+    echo "警告：未找到预期的二进制文件，请检查 release 页面"
+    ls -la
+fi
 ```
 
 **如果下载失败**：尝试本地编译
@@ -124,21 +190,76 @@ cp target/release/gridnode ~/.local/share/idm-gridcore/bin/
 
 #### 步骤 2：生成配置
 
+**配置文件路径优先级**（GridNode 按此顺序查找）：
+1. 环境变量 `IDM_GRIDCORE_CONFIG` 指定的路径
+2. `/etc/idm-gridcore/gridnode.toml`（系统级配置，需要 root）
+3. 用户默认配置目录（推荐）
+
+**用户默认配置目录**：
+- **macOS**: `~/Library/Application Support/idm-gridcore/gridnode.toml`
+- **Linux**: `~/.config/idm-gridcore/gridnode.toml`
+
 ```bash
-# 创建配置目录
-sudo mkdir -p /etc/idm-gridcore
+# 检测操作系统并设置配置路径
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    CONFIG_DIR="$HOME/Library/Application Support/idm-gridcore"
+else
+    CONFIG_DIR="$HOME/.config/idm-gridcore"
+fi
+
+mkdir -p "$CONFIG_DIR"
+
+# 生成随机 token
+TOKEN="skill-$(openssl rand -hex 16)"
 
 # 生成 ComputeHub 配置
-sudo tee /etc/idm-gridcore/computehub.toml > /dev/null << 'EOF'
+cat > "$CONFIG_DIR/computehub.toml" << EOF
 bind = "0.0.0.0:8080"
-token = "skill-generated-token-$(openssl rand -hex 8)"
+token = "$TOKEN"
 EOF
 
-# 生成 GridNode 配置
-sudo tee /etc/idm-gridcore/gridnode.toml > /dev/null << EOF
+# 生成 GridNode 配置（必需配置）
+cat > "$CONFIG_DIR/gridnode.toml" << EOF
+# ComputeHub 服务端地址
 server_url = "http://localhost:8080"
-token = "$(grep token /etc/idm-gridcore/computehub.toml | cut -d'"' -f2)"
+
+# 节点认证 Token（必须与 ComputeHub 配置的 token 相同）
+token = "$TOKEN"
 EOF
+
+echo "配置已生成: $CONFIG_DIR"
+```
+
+**GridNode 完整配置参考**：
+
+```toml
+# ========== 必需配置（必须手动设置）==========
+# ComputeHub 服务端地址
+server_url = "http://192.168.1.100:8080"
+
+# 节点认证 Token（必须与 ComputeHub 配置的 token 相同）
+token = "your-secret-token"
+
+# ========== 可选配置（都有默认值）==========
+# 节点唯一 ID（首次启动由 ComputeHub 分配，自动保存到配置文件）
+# node_id = "xxx-xxx-xxx"
+
+# 并行容器数（默认使用 CPU 核心数）
+# parallelism = 4
+
+# 心跳间隔（秒，默认 30）
+# heartbeat_interval = 30
+
+# 停止容器的优雅超时（秒，默认 30）
+# 任务切换或停止时，给容器多少时间来完成当前工作
+# stop_timeout = 30
+
+# 每个容器的内存限制（MB，默认 1024）
+# container_memory = 1024
+
+# ========== 自动检测字段（无需配置）==========
+# hostname - 自动获取系统主机名
+# architecture - 自动检测 CPU 架构 (x86_64/aarch64/arm)
 ```
 
 #### 步骤 3：启动 Redis
@@ -164,12 +285,21 @@ redis-cli -a changeme-strong-password ping
 #### 步骤 4：启动 ComputeHub
 
 ```bash
+# 获取配置路径
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    CONFIG_DIR="$HOME/Library/Application Support/idm-gridcore"
+else
+    CONFIG_DIR="$HOME/.config/idm-gridcore"
+fi
+
 # 前台启动（调试用）
-~/.local/share/idm-gridcore/bin/computehub
+~/.local/share/idm-gridcore/bin/computehub -c "$CONFIG_DIR/computehub.toml"
 
 # 或后台启动
-nohup ~/.local/share/idm-gridcore/bin/computehub > /tmp/computehub.log 2>&1 &
+nohup ~/.local/share/idm-gridcore/bin/computehub -c "$CONFIG_DIR/computehub.toml" > /tmp/computehub.log 2>&1 &
 echo $! > /tmp/computehub.pid
+
+sleep 2
 
 # 验证
 curl http://localhost:8080/health
@@ -179,32 +309,48 @@ curl http://localhost:8080/health
 #### 步骤 5：启动 GridNode
 
 ```bash
-# 需要 sudo 访问 Docker
-sudo ~/.local/share/idm-gridcore/bin/gridnode &
-# 注意：首次启动会保存 node_id 到配置文件
+# 获取配置路径
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    CONFIG_DIR="$HOME/Library/Application Support/idm-gridcore"
+else
+    CONFIG_DIR="$HOME/.config/idm-gridcore"
+fi
+
+# 启动 GridNode（首次启动会自动保存 node_id）
+~/.local/share/idm-gridcore/bin/gridnode -c "$CONFIG_DIR/gridnode.toml" &
+
+# 获取 token
+TOKEN=$(grep token "$CONFIG_DIR/computehub.toml" | cut -d'"' -f2)
 
 # 验证节点注册
-curl -H "Authorization: Bearer $(grep token /etc/idm-gridcore/computehub.toml | cut -d'"' -f2)" \
-  http://localhost:8080/api/nodes
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/nodes
 ```
 
 #### 步骤 6：记录部署信息
 
 ```bash
-# 保存到 skill 配置目录，方便后续管理
+# 获取配置路径
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    CONFIG_DIR="$HOME/Library/Application Support/idm-gridcore"
+else
+    CONFIG_DIR="$HOME/.config/idm-gridcore"
+fi
+
+# 保存到 skill state 目录，方便后续管理
 mkdir -p ~/.config/agents/skills/idm-gridcore/state
 
 cat > ~/.config/agents/skills/idm-gridcore/state/local_cluster.json << EOF
 {
   "mode": "local",
+  "token": "$TOKEN",
   "computehub": {
     "pid": $(cat /tmp/computehub.pid),
     "binary_path": "$HOME/.local/share/idm-gridcore/bin/computehub",
-    "config_path": "/etc/idm-gridcore/computehub.toml",
+    "config_path": "$CONFIG_DIR/computehub.toml",
     "url": "http://localhost:8080"
   },
   "gridnode": {
-    "config_path": "/etc/idm-gridcore/gridnode.toml"
+    "config_path": "$CONFIG_DIR/gridnode.toml"
   },
   "redis": {
     "url": "redis://:changeme-strong-password@localhost:6379"
@@ -290,7 +436,7 @@ if [ -f "$CONFIG_DIR/state/local_cluster.json" ]; then
     # 使用本地集群
     MODE="local"
     COMPUTEHUB_URL=$(jq -r '.computehub.url' "$CONFIG_DIR/state/local_cluster.json")
-    TOKEN=$(grep token /etc/idm-gridcore/computehub.toml | cut -d'"' -f2)
+    TOKEN=$(jq -r '.token' "$CONFIG_DIR/state/local_cluster.json")
     REDIS_URL=$(jq -r '.redis.url' "$CONFIG_DIR/state/local_cluster.json")
 elif [ -f "$CONFIG_DIR/skill.toml" ]; then
     # 使用预设集群
@@ -354,6 +500,8 @@ EOF
 docker build -t idm-task:sqrt .
 
 # ========== 步骤 2：注册任务 ==========
+
+# 单镜像（所有架构通用，推荐）
 curl -X POST "${COMPUTEHUB_URL}/api/tasks" \
   -H "Authorization: Bearer ${TOKEN}" \
   -H "Content-Type: application/json" \
@@ -365,6 +513,22 @@ curl -X POST "${COMPUTEHUB_URL}/api/tasks" \
     "input_queue": "sqrt:input",
     "output_queue": "sqrt:output"
   }'
+
+# 多架构镜像（不同架构使用不同镜像标签）
+# 支持的架构：linux/amd64 (x86_64), linux/arm64 (ARM64), linux/arm/v7 (ARM32)
+# curl -X POST "${COMPUTEHUB_URL}/api/tasks" \
+#   -H "Authorization: Bearer ${TOKEN}" \
+#   -H "Content-Type: application/json" \
+#   -d '{
+#     "name": "sqrt-calc",
+#     "images": {
+#       "linux/amd64": "your-registry/hea-calc:v1.0-amd64",
+#       "linux/arm64": "your-registry/hea-calc:v1.0-arm64"
+#     },
+#     "input_redis": "'"${REDIS_URL}"'",
+#     "input_queue": "sqrt:input",
+#     "output_queue": "sqrt:output"
+#   }'
 
 echo "任务已注册"
 
@@ -425,9 +589,47 @@ rm -rf "$WORKDIR"
 
 ## 常用操作命令
 
-> **API 完整列表**: https://github.com/Wolido/idm-gridcore
-> 
-> 以下是常用命令示例，所有接口的详细说明请参考项目源码。
+### API 列表
+
+所有 API 都需要认证头 `Authorization: Bearer <token>`，除了 `/health`。
+
+```yaml
+user_apis:
+  - endpoint: /api/tasks
+    method: POST
+    description: 注册新任务
+  - endpoint: /api/tasks
+    method: GET
+    description: 查看任务队列
+  - endpoint: /api/tasks/next
+    method: POST
+    description: 切换到下一个任务（旧接口，建议使用 finish）
+  - endpoint: /api/tasks/finish
+    method: POST
+    description: 完成当前任务，自动开始下一个（推荐）
+  - endpoint: /api/nodes
+    method: GET
+    description: 查看在线节点列表
+  - endpoint: /api/nodes/:node_id/stop
+    method: POST
+    description: 请求指定节点优雅停止
+
+gridnode_internal_apis:
+  - endpoint: /gridnode/register
+    method: POST
+    description: 节点注册（首次启动时）
+  - endpoint: /gridnode/heartbeat
+    method: POST
+    description: 心跳上报，返回包含 stop_requested 字段
+  - endpoint: /gridnode/task
+    method: GET
+    description: 获取当前任务配置
+
+public_apis:
+  - endpoint: /health
+    method: GET
+    description: 健康检查，无需认证，返回 OK
+```
 
 ### 查看集群状态
 
@@ -473,6 +675,122 @@ redis-cli -u "$REDIS_URL" llen mytask:output  # 已完成
 NODE_ID="节点id"
 curl -X POST "${COMPUTEHUB_URL}/api/nodes/${NODE_ID}/stop" \
   -H "Authorization: Bearer ${TOKEN}"
+```
+
+### 完成任务并切换到下一个
+
+当当前任务的 Redis 队列空了（人工确认）：
+
+```bash
+curl -X POST "${COMPUTEHUB_URL}/api/tasks/finish" \
+  -H "Authorization: Bearer ${TOKEN}"
+```
+
+响应示例（有下一个任务）：
+```json
+{
+  "completed": "task-1",
+  "started": "task-2",
+  "message": "Task 'task-1' completed, 'task-2' started"
+}
+```
+
+响应示例（最后一个任务）：
+```json
+{
+  "completed": "task-1",
+  "started": null,
+  "message": "Task 'task-1' completed, no more tasks"
+}
+```
+
+所有计算节点会自动切换到下一个任务。
+
+---
+
+## Docker 镜像构建注意事项
+
+### 跨平台兼容性（重要）
+
+GridNode 在 Linux 容器中运行任务。如果你在 macOS 或 Windows 上开发，**绝对不能直接复制本地编译的二进制到镜像中**。
+
+**错误做法**（会导致 Exec format error）：
+```dockerfile
+# 在 macOS 上编译，复制到 Linux 容器 -> 失败
+COPY ./target/release/myapp /usr/local/bin/myapp
+```
+
+**正确做法**：使用多阶段构建，在 Linux 容器中编译
+
+```dockerfile
+# 阶段 1：在 Linux 容器中编译
+FROM rustlang/rust:nightly-bookworm AS builder
+
+WORKDIR /app
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+RUN cargo build --release
+
+# 阶段 2：运行时镜像
+FROM debian:bookworm-slim
+COPY --from=builder /app/target/release/myapp /usr/local/bin/myapp
+CMD ["myapp"]
+```
+
+Python 项目同理：
+```dockerfile
+FROM python:3.11-slim AS builder
+# ... 安装依赖
+
+FROM python:3.11-slim
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+```
+
+### 快速验证镜像
+
+```bash
+# 启动容器检查是否能正常运行
+docker run --rm your-image your-command
+
+# 检查容器日志
+docker logs <container-id>
+```
+
+---
+
+## 容器环境变量
+
+计算容器启动时会注入以下环境变量：
+
+```yaml
+env_vars:
+  TASK_NAME: 任务名称
+  NODE_ID: 节点 ID
+  INSTANCE_ID: 容器实例 ID
+  INPUT_REDIS_URL: 输入队列 Redis 地址
+  OUTPUT_REDIS_URL: 输出队列 Redis 地址
+  INPUT_QUEUE: 输入队列名
+  OUTPUT_QUEUE: 输出队列名
+```
+
+容器内部使用这些变量连接 Redis 获取任务。示例：
+
+```python
+import redis
+import os
+
+r_in = redis.from_url(os.getenv("INPUT_REDIS_URL"))
+r_out = redis.from_url(os.getenv("OUTPUT_REDIS_URL"))
+input_queue = os.getenv("INPUT_QUEUE")
+output_queue = os.getenv("OUTPUT_QUEUE")
+
+while True:
+    result = r_in.brpop(input_queue, timeout=5)
+    if not result:
+        break
+    # 处理任务...
+    r_out.lpush(output_queue, "result")
 ```
 
 ---
@@ -529,6 +847,85 @@ while True:
 
 ---
 
+## 构建可靠的任务镜像
+
+### 推荐：使用 ENTRYPOINT 而非依赖 cmd 参数
+
+GridNode 注册任务时可以传递 `cmd` 参数来覆盖容器默认命令，但实践中发现这不够可靠（GridNode 可能因版本或配置问题未能正确传递）。
+
+**推荐做法**：使用 `ENTRYPOINT` 脚本将启动逻辑内置于镜像中。
+
+#### 不可靠的方式
+
+```dockerfile
+FROM python:3.11-slim
+COPY consumer.py /app/
+CMD ["python", "/app/consumer.py"]  # 依赖 GridNode 传 cmd 覆盖
+```
+
+```bash
+# 注册任务时传 cmd（可能不生效）
+curl -X POST "${COMPUTEHUB_URL}/api/tasks" \
+  -d '{
+    "name": "my-task",
+    "image": "my-image",
+    "cmd": ["python", "/app/consumer.py"],
+    ...
+  }'
+```
+
+#### 推荐方式
+
+**entrypoint.sh**:
+```bash
+#!/bin/bash
+# 从环境变量读取配置（GridNode 自动注入）
+INPUT_REDIS_URL="${INPUT_REDIS_URL:-redis://localhost:6379}"
+OUTPUT_QUEUE="${OUTPUT_QUEUE:-task:output}"
+
+# 启动任务
+exec python /app/consumer.py \
+  --redis-url "$INPUT_REDIS_URL" \
+  --output-queue "$OUTPUT_QUEUE"
+```
+
+**Dockerfile**:
+```dockerfile
+FROM python:3.11-slim
+
+# 安装依赖
+RUN pip install redis
+
+# 复制代码
+COPY consumer.py /app/
+
+# 复制启动脚本
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# 使用 ENTRYPOINT（不依赖外部 cmd 参数）
+ENTRYPOINT ["/entrypoint.sh"]
+```
+
+```bash
+# 注册任务时无需传 cmd
+curl -X POST "${COMPUTEHUB_URL}/api/tasks" \
+  -d '{
+    "name": "my-task",
+    "image": "my-image",
+    "input_redis": "redis://localhost:6379",
+    "input_queue": "task:input",
+    "output_queue": "task:output"
+  }'
+```
+
+**好处**：
+- 镜像自包含，不依赖 GridNode 正确传递 `cmd`
+- 可以从环境变量读取动态配置（GridNode 自动注入）
+- 更容易测试：`docker run my-image` 即可
+
+---
+
 ## 故障排查
 
 ### 问题 1：Docker 权限不足
@@ -551,9 +948,16 @@ sudo gridnode
 
 **排查**：
 ```bash
+# 获取配置路径
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    CONFIG_DIR="$HOME/Library/Application Support/idm-gridcore"
+else
+    CONFIG_DIR="$HOME/.config/idm-gridcore"
+fi
+
 # 检查 token 是否匹配
-grep token /etc/idm-gridcore/computehub.toml
-grep token /etc/idm-gridcore/gridnode.toml
+grep token "$CONFIG_DIR/computehub.toml"
+grep token "$CONFIG_DIR/gridnode.toml"
 
 # 检查网络连通性
 curl http://localhost:8080/health
