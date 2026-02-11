@@ -979,25 +979,33 @@ curl http://localhost:8080/health
 - GridNode 日志显示之前的错误状态未清除
 
 **原因**：
-GridNode 只有在检测到**新任务**（不同名称）时才会清除错误状态。如果重新注册**同名任务**，错误状态会继续保留。
+GridNode 只有在检测到**新任务**（任务变化）时才会清除错误状态。如果当前任务一直处于 Error 状态，新注册的任务可能不会触发状态清除。
 
 **解决方案**：
 
-**推荐**：使用不同名称重新注册任务
+**推荐**：调用 finish 接口完成当前任务
 ```bash
-# 错误：使用相同名称，错误状态不重置
-curl -X POST "${COMPUTEHUB_URL}/api/tasks" \
-  -d '{"name": "my-task", ...}'
+# 将当前报错任务标记为完成，自动切换到下一个任务
+# GridNode 检测到任务变化，自动清除错误状态
+curl -X POST "${COMPUTEHUB_URL}/api/tasks/finish" \
+  -H "Authorization: Bearer ${TOKEN}"
 
-# 正确：使用新名称（如加版本号/时间戳）
+# 然后注册新任务
+curl -X POST "${COMPUTEHUB_URL}/api/tasks" \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -d '{"name": "my-task", "image": "..."}'
+```
+
+**备选 1**：使用不同名称重新注册任务
+```bash
+# 使用新名称（如加版本号）
 curl -X POST "${COMPUTEHUB_URL}/api/tasks" \
   -d '{"name": "my-task-v2", ...}'
 ```
 
-**备选**：重启 GridNode
+**备选 2**：重启 GridNode
 ```bash
 kill $(cat /tmp/gridnode.pid)
-# 重新启动 GridNode
 nohup ./gridnode -c ~/.config/idm-gridcore/gridnode.toml &
 ```
 
