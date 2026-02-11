@@ -1116,3 +1116,299 @@ skill 自动管理的配置文件：
   - 所有 API 接口定义、数据模型、协议规范请查阅此仓库
 - 架构文档：https://github.com/Wolido/idm-gridcore/blob/main/ARCHITECTURE.md
 - 故障排查：https://github.com/Wolido/idm-gridcore/blob/main/TROUBLESHOOTING.md
+
+---
+
+## 快速参考规则
+
+以下规则凝练自实战经验，无需理解上下文即可直接应用。
+
+### 规则0：Redis 密码是全局契约，必须首先确认
+
+**部署前必须明确 Redis 密码**，并在所有环节保持一致：
+
+```yaml
+涉及密码的环节:
+  - Redis 启动: --requirepass $PASSWORD
+  - 数据推送:   --redis-password $PASSWORD 或 URL 中包含密码
+  - 任务注册:   input_redis URL 必须包含密码
+  - 容器内:     通过 INPUT_REDIS_URL 环境变量传递（已包含密码）
+
+密码不匹配的后果:
+  - 推送阶段: "NOAUTH: Authentication required"
+  - 容器启动: 连接 Redis 失败，容器反复退出
+  - GridNode: runtime_status 变为 Error
+
+最佳实践:
+  - 生成随机密码并记录
+  - 在所有命令中使用同一变量 $REDIS_PASSWORD
+  - 避免硬编码密码，通过环境变量传递
+```
+
+**示例流程**：
+```bash
+# 1. 定义密码（一次定义，全局使用）
+export REDIS_PASSWORD="$(openssl rand -hex 16)"
+
+# 2. 启动 Redis（使用密码）
+docker run -d --name redis -e REDIS_PASSWORD=$REDIS_PASSWORD redis:7-alpine \
+  redis-server --requirepass $REDIS_PASSWORD
+
+# 3. 推送数据（使用密码）
+./myapp push --redis-password $REDIS_PASSWORD
+
+# 4. 注册任务（URL 包含密码）
+REDIS_URL="redis://:$REDIS_PASSWORD@host:6379"
+curl -X POST /api/tasks -d "{\"input_redis\":\"$REDIS_URL\",...}"
+```
+
+### 规则1：信任编排器注入的完整URL
+
+**禁止拆解** `INPUT_REDIS_URL`，必须作为不透明字符串使用。
+
+```bash
+# 正确
+myapp --redis-url "$INPUT_REDIS_URL"
+
+# 错误（丢失可能的TLS参数、集群拓扑信息）
+REDIS_HOST=$(echo $INPUT_REDIS_URL | sed 's/.*@//;s/:.*//')
+myapp --redis-host "$REDIS_HOST" --port 6379
+```
+
+### 规则2：entrypoint必须使用ENTRYPOINT
+
+Dockerfile 中**永不使用 CMD**，确保 GridNode 不传 `cmd` 参数也能运行。
+
+```dockerfile
+# 正确
+ENTRYPOINT ["/entrypoint.sh"]
+
+# 错误（依赖 GridNode 传递 cmd）
+CMD ["python", "app.py"]
+```
+
+### 规则3：启动阶段必须验证连接并快速失败
+
+```bash
+#!/bin/bash
+set -e
+
+if [ -z "$INPUT_REDIS_URL" ]; then
+    echo '{"error":"INPUT_REDIS_URL not set"}' >&2
+    exit 1
+fi
+
+# 可选：立即测试连接
+if ! myapp --test-connection "$INPUT_REDIS_URL" 2>/dev/null; then
+    echo '{"error":"Redis connection failed"}' >&2
+    exit 1
+fi
+
+exec myapp --redis-url "$INPUT_REDIS_URL"
+```
+
+### 规则4：跨平台构建必须多阶段
+
+**绝对禁止**复制宿主机编译的二进制到 Linux 容器。
+
+```dockerfile
+FROM rustlang/rust:nightly-bookworm AS builder
+COPY . .
+RUN cargo build --release
+
+FROM debian:bookworm-slim
+COPY --from=builder /app/target/release/myapp /usr/local/bin/myapp
+```
+
+### 规则5：观测只看两个端点
+
+GridNode 远程时，**唯一可信观测点**：
+
+```yaml
+ComputeHub_API:
+  endpoint: /api/nodes
+  fields:
+    - runtime_status    # Online/Error
+    - active_containers # 实际运行的容器数
+  meaning: 节点健康状态
+
+Redis:
+  commands:
+    - llen input   # 待处理任务数
+    - llen output  # 已完成任务数
+  meaning: 任务处理进度
+
+禁止依赖:
+  - 容器日志
+  - Docker 命令
+  - 宿主机文件系统
+```
+
+### 规则6：修复配置后必须重置状态
+
+GridNode 的 `runtime_status: Error` 是**粘滞状态**。
+
+```bash
+# 修复镜像/配置后，必须执行：
+curl -X POST /api/tasks/finish -H "Authorization: Bearer $TOKEN"
+# 或重启 GridNode
+```
+
+### 规则7：任务必须是幂等的
+
+同一任务可以安全运行多次，结果一致。GridNode 可能在容器失败后重发任务。
+
+```python
+# 消费者逻辑
+while True:
+    task = redis.brpop(INPUT_QUEUE, timeout=5)
+    if not task:
+        break
+    result = process(task)  # 幂等：重复执行结果相同
+    redis.lpush(OUTPUT_QUEUE, result)
+```
+
+### 规则8：数据文件打包进镜像
+
+将只读数据（如 `data.csv`）打包进镜像，减少运行时依赖。
+
+```dockerfile
+COPY data.csv /data/data.csv
+```
+
+避免运行时通过 volume 挂载，因为远程 GridNode 不一定能访问本机路径。
+
+### 规则9：Redis CLI 是必需工具
+
+远程 Redis 场景下，**必须**在宿主机安装 redis-cli：
+
+```bash
+brew install redis
+```
+
+唯一观测手段：
+```bash
+redis-cli -h $REDIS_HOST -a $PASSWORD llen input
+redis-cli -h $REDIS_HOST -a $PASSWORD lrange output 0 9
+```
+
+### 规则10：标准流水线三阶段
+
+所有任务遵循相同模式：
+
+```yaml
+pipeline:
+  generator:   # 本机运行
+    action: push
+    target: Redis input queue
+    
+  consumer:    # GridNode 运行（容器内）
+    action: process
+    properties:
+      - stateless
+      - idempotent
+      
+  collector:   # 本机运行
+    action: pull
+    source: Redis output queue
+    target: persistent storage
+```
+
+---
+
+## 最小可复用模板
+
+### Dockerfile 模板
+
+```dockerfile
+FROM rustlang/rust:nightly-bookworm AS builder
+WORKDIR /app
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+RUN cargo build --release
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y ca-certificates libssl3 && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /app/target/release/myapp /usr/local/bin/myapp
+COPY data.csv /data/data.csv
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
+```
+
+### entrypoint.sh 模板
+
+```bash
+#!/bin/bash
+set -e
+
+INPUT_REDIS_URL="${INPUT_REDIS_URL}"
+INPUT_QUEUE="${INPUT_QUEUE:-tasks}"
+OUTPUT_QUEUE="${OUTPUT_QUEUE:-results}"
+
+if [ -z "$INPUT_REDIS_URL" ]; then
+    echo '{"error":"INPUT_REDIS_URL not set"}' >&2
+    exit 1
+fi
+
+echo "Starting task..."
+echo "Queue: $INPUT_QUEUE -> $OUTPUT_QUEUE"
+
+exec myapp \
+    --redis-url "$INPUT_REDIS_URL" \
+    --input-queue "$INPUT_QUEUE" \
+    --output-queue "$OUTPUT_QUEUE"
+```
+
+### 部署检查清单
+
+```yaml
+steps:
+  build:
+    command: docker build -t mytask:latest .
+    
+  push_data:
+    command: ./myapp push --redis-url redis://:pass@host:6379
+    
+  register_task:
+    endpoint: POST /api/tasks
+    headers:
+      Authorization: Bearer $TOKEN
+    body:
+      name: mytask
+      image: mytask:latest
+      input_redis: redis://:pass@host:6379
+      input_queue: tasks
+      output_queue: results
+      
+  monitor:
+    command: watch -n 1 'redis-cli -a pass llen tasks && redis-cli -a pass llen results'
+```
+
+---
+
+## 故障排查速查表
+
+```yaml
+symptoms:
+  - phenomenon: 队列不减少
+    check: curl /api/nodes 看 runtime_status
+    fix:
+      - if Error: 调用 /finish 或重启 GridNode
+      
+  - phenomenon: active_containers=0
+    check: docker ps 看镜像是否存在
+    fix: 重新构建/推送镜像
+    
+  - phenomenon: 容器反复退出
+    check: docker run --rm mytask:latest 本机测试
+    fix: 检查 entrypoint.sh 是否正确读取环境变量
+    
+  - phenomenon: Redis 连接失败
+    check: redis-cli ping
+    fix: 检查密码、网络、URL 格式
+    
+  - phenomenon: 节点状态 Error 不恢复
+    root_cause: 状态机粘滞性
+    fix: 必须触发任务切换或重启 GridNode
+```
