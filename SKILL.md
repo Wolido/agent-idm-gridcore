@@ -286,12 +286,21 @@ COPY --from=builder /app/target/release/myapp /usr/local/bin/myapp
 
 ## 故障排查
 
-| 症状 | 原因 | 解决 |
-|------|------|------|
-| Exec format error | macOS 二进制复制到 Linux 容器 | 使用多阶段构建 |
-| NOAUTH 错误 | Redis 密码不匹配 | 检查所有环节密码一致 |
-| 容器反复退出 | 连接 Redis 失败 | 检查 URL 和密码 |
-| 节点不在线 | GridNode 未启动或 token 错误 | 检查日志和配置 |
+```yaml
+故障排查表:
+  - 症状: Exec format error
+    原因: macOS 二进制复制到 Linux 容器
+    解决: 使用多阶段构建
+  - 症状: NOAUTH 错误
+    原因: Redis 密码不匹配
+    解决: 检查所有环节密码一致
+  - 症状: 容器反复退出
+    原因: 连接 Redis 失败
+    解决: 检查 URL 和密码
+  - 症状: 节点不在线
+    原因: GridNode 未启动或 token 错误
+    解决: 检查日志和配置
+```
 
 **详细排查**: 参见 `references/troubleshooting.md`
 
